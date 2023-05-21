@@ -9,7 +9,7 @@ export PATH
 #	WebSite: https://qste.com
 #=================================================
 
-sh_ver="1.4.0"
+sh_ver="1.4.1"
 filepath=$(cd "$(dirname "$0")"; pwd)
 file_1=$(echo -e "${filepath}"|awk -F "$0" '{print $1}')
 FOLDER="/etc/ss-rust"
@@ -302,8 +302,8 @@ ${Green_font_prefix} 1.${Font_color_suffix} 开启  ${Green_font_prefix} 2.${Fon
 
 Set_password(){
 	echo "请输入 Shadowsocks Rust 密码 [0-9][a-z][A-Z]"
-	read -e -p "(默认：随机生成)：" password
-	[[ -z "${password}" ]] && password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+	read -e -p "(默认：随机生成32位长度)：" password
+	[[ -z "${password}" ]] && password=$(openssl rand -base64 32)
 	echo && echo "=================================="
 	echo -e "密码：${Red_background_prefix} ${password} ${Font_color_suffix}"
 	echo "==================================" && echo
@@ -312,9 +312,9 @@ Set_password(){
 Set_cipher(){
 	echo -e "请选择 Shadowsocks Rust 加密方式
 ==================================	
- ${Green_font_prefix} 1.${Font_color_suffix} chacha20-ietf-poly1305 ${Green_font_prefix}(推荐)${Font_color_suffix}
- ${Green_font_prefix} 2.${Font_color_suffix} aes-128-gcm ${Green_font_prefix}(推荐)${Font_color_suffix}
- ${Green_font_prefix} 3.${Font_color_suffix} aes-256-gcm ${Green_font_prefix}(默认)${Font_color_suffix}
+ ${Green_font_prefix} 1.${Font_color_suffix} 2022-blake3-chacha20-poly1305 ${Green_font_prefix}(默认)${Font_color_suffix}
+ ${Green_font_prefix} 2.${Font_color_suffix} 2022-blake3-aes-128-gcm ${Green_font_prefix}(推荐)${Font_color_suffix}
+ ${Green_font_prefix} 3.${Font_color_suffix} 2022-blake3-aes-256-gcm ${Green_font_prefix}(推荐)${Font_color_suffix}
  ${Green_font_prefix} 4.${Font_color_suffix} plain ${Red_font_prefix}(不推荐)${Font_color_suffix}
  ${Green_font_prefix} 5.${Font_color_suffix} none ${Red_font_prefix}(不推荐)${Font_color_suffix}
  ${Green_font_prefix} 6.${Font_color_suffix} table
@@ -326,14 +326,14 @@ Set_cipher(){
  ${Green_font_prefix}12.${Font_color_suffix} chacha20-ietf
 ==================================
  ${Tip} 如需其它加密方式请手动修改配置文件 !" && echo
-	read -e -p "(默认: 3. aes-256-gcm)：" cipher
-	[[ -z "${cipher}" ]] && cipher="3"
+	read -e -p "(默认: 1. 2022-blake3-chacha20-poly1305)：" cipher
+	[[ -z "${cipher}" ]] && cipher="1"
 	if [[ ${cipher} == "1" ]]; then
-		cipher="chacha20-ietf-poly1305"
+		cipher="2022-blake3-chacha20-poly1305"
 	elif [[ ${cipher} == "2" ]]; then
-		cipher="aes-128-gcm"
+		cipher="2022-blake3-aes-128-gcm"
 	elif [[ ${cipher} == "3" ]]; then
-		cipher="aes-256-gcm"
+		cipher="2022-blake3-aes-256-gcm"
 	elif [[ ${cipher} == "4" ]]; then
 		cipher="plain"
 	elif [[ ${cipher} == "5" ]]; then
