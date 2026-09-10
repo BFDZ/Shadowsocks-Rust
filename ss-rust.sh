@@ -28,34 +28,113 @@ check_root(){
 }
 
 check_sys(){
-	if [[ -f /etc/redhat-release ]]; then
-		release="centos"
-	elif cat /etc/issue | grep -q -E -i "debian"; then
-		release="debian"
-	elif cat /etc/issue | grep -q -E -i "ubuntu"; then
-		release="ubuntu"
-	elif cat /etc/issue | grep -q -E -i "centos|red hat|redhat"; then
-		release="centos"
-	elif cat /proc/version | grep -q -E -i "debian"; then
-		release="debian"
-	elif cat /proc/version | grep -q -E -i "ubuntu"; then
-		release="ubuntu"
-	elif cat /proc/version | grep -q -E -i "centos|red hat|redhat"; then
-		release="centos"
-    fi
+	local os_id="" os_like=""
+	if [[ -f /etc/os-release ]]; then
+		os_id=$(grep -E '^ID=' /etc/os-release | head -1 | cut -d= -f2 | tr -d '"')
+		os_like=$(grep -E '^ID_LIKE=' /etc/os-release | head -1 | cut -d= -f2 | tr -d '"')
+	elif [[ -f /etc/redhat-release ]]; then
+		os_id="centos"
+	elif grep -q -E -i "debian|ubuntu" /etc/issue 2>/dev/null; then
+		os_id="debian"
+	fi
+	case "${os_id} ${os_like}" in
+		*debian*|*ubuntu*)
+			release="debian"
+			;;
+		*centos*|*rhel*|*fedora*|*rocky*|*almalinux*|*oracle*)
+			release="centos"
+			;;
+		*opensuse*|*suse*|*sles*)
+			release="suse"
+			;;
+		*arch*|*manjaro*)
+			release="arch"
+			;;
+		*alpine*)
+			release="alpine"
+			;;
+		*)
+			release="unknown"
+			;;
+	esac
+	if command -v dnf >/dev/null 2>&1; then
+		pkg_mgr="dnf"
+	elif command -v yum >/dev/null 2>&1; then
+		pkg_mgr="yum"
+	elif command -v apt-get >/dev/null 2>&1; then
+		pkg_mgr="apt-get"
+	elif command -v zypper >/dev/null 2>&1; then
+		pkg_mgr="zypper"
+	elif command -v pacman >/dev/null 2>&1; then
+		pkg_mgr="pacman"
+	elif command -v apk >/dev/null 2>&1; then
+		pkg_mgr="apk"
+	else
+		pkg_mgr=""
+	fi
 }
 
 sysArch() {
     uname=$(uname -m)
-    if [[ "$uname" == "i686" ]] || [[ "$uname" == "i386" ]]; then
-        arch="i686"
-    elif [[ "$uname" == *"armv7"* ]] || [[ "$uname" == "armv6l" ]]; then
-        arch="arm"
-    elif [[ "$uname" == *"armv8"* ]] || [[ "$uname" == "aarch64" ]]; then
-        arch="aarch64"
-    else
-        arch="x86_64"
-    fi    
+    arch_musl=""
+    arch_gnu=""
+    case "$uname" in
+        x86_64|amd64)
+            arch="x86_64"
+            arch_musl="x86_64-unknown-linux-musl"
+            arch_gnu="x86_64-unknown-linux-gnu"
+            ;;
+        i686|i386)
+            arch="i686"
+            arch_musl="i686-unknown-linux-musl"
+            arch_gnu=""
+            ;;
+        aarch64|armv8*|arm64)
+            arch="aarch64"
+            arch_musl="aarch64-unknown-linux-musl"
+            arch_gnu="aarch64-unknown-linux-gnu"
+            ;;
+        armv7*)
+            arch="arm"
+            arch_musl="armv7-unknown-linux-musleabihf"
+            arch_gnu="armv7-unknown-linux-gnueabihf"
+            ;;
+        armv6*|arm)
+            arch="arm"
+            arch_musl="arm-unknown-linux-musleabihf"
+            arch_gnu="arm-unknown-linux-gnueabihf"
+            ;;
+        mips64el)
+            arch="mips64el"
+            arch_musl=""
+            arch_gnu="mips64el-unknown-linux-gnuabi64"
+            ;;
+        mipsel)
+            arch="mipsel"
+            arch_musl=""
+            arch_gnu="mipsel-unknown-linux-gnu"
+            ;;
+        mips)
+            arch="mips"
+            arch_musl=""
+            arch_gnu="mips-unknown-linux-gnu"
+            ;;
+        riscv64)
+            arch="riscv64"
+            arch_musl="riscv64gc-unknown-linux-musl"
+            arch_gnu="riscv64gc-unknown-linux-gnu"
+            ;;
+        loongarch64)
+            arch="loongarch64"
+            arch_musl="loongarch64-unknown-linux-musl"
+            arch_gnu="loongarch64-unknown-linux-gnu"
+            ;;
+        *)
+            echo -e "${Error} 当前系统架构 [ ${uname} ] 不受官方预编译包支持！"
+            echo -e "${Error} 请参考 https://github.com/shadowsocks/shadowsocks-rust/releases 自行编译安装。"
+            exit 1
+            ;;
+    esac
 }
 
 #开启系统 TCP Fast Open
@@ -94,7 +173,9 @@ check_installed_status(){
 }
 
 check_status(){
-	status=`systemctl status ss-rust | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1`
+	status="$(systemctl is-active ss-rust 2>/dev/null)"
+	[[ "${status}" == "active" ]] && status="running"
+	return 0
 }
 
 check_new_ver(){
@@ -144,16 +225,21 @@ check_ver_comparison(){
 
 # 官方源
 stable_Download() {
-	echo -e "${Info} 开始下载官方源 Shadowsocks Rust (musl 静态链接版本，兼容低版本 glibc 系统)……"
-	# 优先下载 musl 版本（静态链接，不依赖系统 glibc，可在旧系统上运行）
-	local tar_file="shadowsocks-${new_ver}.${arch}-unknown-linux-musl.tar.xz"
-	wget --no-check-certificate -N "https://github.com/shadowsocks/shadowsocks-rust/releases/download/${new_ver}/${tar_file}"
-	if [[ ! -e "${tar_file}" ]]; then
-		echo -e "${Tip} musl 版本下载失败，尝试下载 gnu 版本……"
-		tar_file="shadowsocks-${new_ver}.${arch}-unknown-linux-gnu.tar.xz"
+	echo -e "${Info} 开始下载官方源 Shadowsocks Rust ……"
+	local tar_file="" target=""
+	if [[ -n "${arch_musl}" ]]; then
+		target="${arch_musl}"
+		tar_file="shadowsocks-${new_ver}.${target}.tar.xz"
+		echo -e "${Info} 优先下载 musl 静态链接版本 (${target})，兼容低版本 glibc 系统……"
 		wget --no-check-certificate -N "https://github.com/shadowsocks/shadowsocks-rust/releases/download/${new_ver}/${tar_file}"
 	fi
-	if [[ ! -e "${tar_file}" ]]; then
+	if [[ -z "${tar_file}" || ! -e "${tar_file}" ]] && [[ -n "${arch_gnu}" ]]; then
+		target="${arch_gnu}"
+		tar_file="shadowsocks-${new_ver}.${target}.tar.xz"
+		echo -e "${Tip} musl 版本不可用，尝试下载 gnu 版本 (${target})……"
+		wget --no-check-certificate -N "https://github.com/shadowsocks/shadowsocks-rust/releases/download/${new_ver}/${tar_file}"
+	fi
+	if [[ -z "${tar_file}" || ! -e "${tar_file}" ]]; then
 		echo -e "${Error} Shadowsocks Rust 官方源下载失败！"
 		return 1 && exit 1
 	else
@@ -234,12 +320,27 @@ systemctl enable --now ss-rust
 }
 
 Installation_dependency(){
-	if [[ ${release} == "centos" ]]; then
-		yum update && yum install jq gzip wget curl unzip xz -y
-	else
-		apt-get update && apt-get install jq gzip wget curl unzip xz-utils -y
-	fi
-	\cp -f /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+	case "${pkg_mgr}" in
+		dnf|yum)
+			${pkg_mgr} install -y jq gzip wget curl unzip xz
+			;;
+		apt-get)
+			apt-get update && apt-get install -y jq gzip wget curl unzip xz-utils
+			;;
+		zypper)
+			zypper --non-interactive --gpg-auto-import-keys install jq gzip wget curl unzip xz
+			;;
+		pacman)
+			pacman -Sy --noconfirm --needed jq gzip wget curl unzip xz
+			;;
+		apk)
+			apk add --no-cache jq gzip wget curl unzip xz
+			;;
+		*)
+			echo -e "${Error} 未识别的包管理器，请手动安装依赖：jq gzip wget curl unzip xz"
+			;;
+	esac
+	[[ -f /usr/share/zoneinfo/Asia/Shanghai ]] && \cp -f /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 }
 
 Write_config(){
@@ -307,10 +408,47 @@ ${Green_font_prefix} 1.${Font_color_suffix} 开启  ${Green_font_prefix} 2.${Fon
 	echo "==================================" && echo
 }
 
+Gen_psk(){
+	case "$1" in
+		2022-blake3-aes-128-gcm)
+			openssl rand -base64 16
+			;;
+		2022-blake3-aes-256-gcm|2022-blake3-chacha20-poly1305)
+			openssl rand -base64 32
+			;;
+		*)
+			openssl rand -base64 32
+			;;
+	esac
+}
+
+check_psk(){
+	local need=""
+	case "$2" in
+		2022-blake3-aes-128-gcm) need=16 ;;
+		2022-blake3-aes-256-gcm|2022-blake3-chacha20-poly1305) need=32 ;;
+		*) return 0 ;;
+	esac
+	local len
+	len=$(printf '%s' "$1" | base64 -d 2>/dev/null | wc -c)
+	[[ "${len}" == "${need}" ]]
+}
+
 Set_password(){
-	echo "请输入 Shadowsocks Rust 密码 [0-9][a-z][A-Z]"
-	read -e -p "(默认：随机生成32位长度)：" password
-	[[ -z "${password}" ]] && password=$(openssl rand -base64 32)
+	echo "请输入 Shadowsocks Rust 密码"
+	if [[ "${cipher}" == 2022-blake3-* ]]; then
+		local keylen="32"
+		[[ "${cipher}" == "2022-blake3-aes-128-gcm" ]] && keylen="16"
+		read -e -p "(默认：随机生成${keylen}字节 base64 密钥)：" password
+		if [[ -z "${password}" ]]; then
+			password=$(Gen_psk "${cipher}")
+		elif ! check_psk "${password}" "${cipher}"; then
+			echo -e "${Tip} 当前密码不是 ${keylen} 字节的合法 base64 密钥，${cipher} 可能启动失败！"
+		fi
+	else
+		read -e -p "(默认：随机生成32位长度)：" password
+		[[ -z "${password}" ]] && password=$(openssl rand -base64 32)
+	fi
 	echo && echo "=================================="
 	echo -e "密码：${Red_background_prefix} ${password} ${Font_color_suffix}"
 	echo "==================================" && echo
@@ -356,7 +494,7 @@ Set_cipher(){
 	elif [[ ${cipher} == "10" ]]; then
 		cipher="camellia-256-cfb"
 	elif [[ ${cipher} == "11" ]]; then
-		cipher="arc4-md5"
+		cipher="rc4-md5"
 	elif [[ ${cipher} == "12" ]]; then
 		cipher="chacha20-ietf"
 	else
@@ -398,6 +536,10 @@ Set(){
 	elif [[ "${modify}" == "3" ]]; then
 		Read_config
 		Set_cipher
+		if [[ "${cipher}" == 2022-blake3-* ]] && ! check_psk "${password}" "${cipher}"; then
+			echo -e "${Tip} 原密码不适用于当前 2022 加密，已自动重新生成密钥"
+			password=$(Gen_psk "${cipher}")
+		fi
 		port=${port}
 		password=${password}
 		tfo=${tfo}
@@ -414,8 +556,8 @@ Set(){
 	elif [[ "${modify}" == "5" ]]; then
 		Read_config
 		Set_port
-		Set_password
 		Set_cipher
+		Set_password
 		Set_tfo
 		Write_config
 		Restart
@@ -428,8 +570,8 @@ Install(){
 	[[ -e ${FILE} ]] && echo -e "${Error} 检测到 Shadowsocks Rust 已安装！" && exit 1
 	echo -e "${Info} 开始设置 配置..."
 	Set_port
-	Set_password
 	Set_cipher
+	Set_password
 	Set_tfo
 	echo -e "${Info} 开始安装/配置 依赖..."
 	Installation_dependency
@@ -458,7 +600,7 @@ Start(){
 Stop(){
 	check_installed_status
 	check_status
-	[[ !"$status" == "running" ]] && echo -e "${Error} Shadowsocks Rust 没有运行，请检查！" && exit 1
+	[[ "$status" != "running" ]] && echo -e "${Error} Shadowsocks Rust 没有运行，请检查！" && exit 1
 	systemctl stop ss-rust
     sleep 3s
     Start_Menu
