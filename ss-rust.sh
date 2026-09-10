@@ -5,11 +5,11 @@ export PATH
 #=================================================
 #	System Required: CentOS/Debian/Ubuntu
 #	Description: Shadowsocks Rust 管理脚本
-#	Author: 翠花
-#	WebSite: https://qste.com
+#	Author: BFDZ
+#	WebSite: https://slyw.me
 #=================================================
 
-sh_ver="1.4.1"
+sh_ver="1.5.0"
 filepath=$(cd "$(dirname "$0")"; pwd)
 file_1=$(echo -e "${filepath}"|awk -F "$0" '{print $1}')
 FOLDER="/etc/ss-rust"
