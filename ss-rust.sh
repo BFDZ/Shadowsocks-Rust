@@ -27,6 +27,10 @@ check_root(){
 	[[ $EUID != 0 ]] && echo -e "${Error} 当前非ROOT账号(或没有ROOT权限)，无法继续操作，请更换ROOT账号或使用 ${Green_background_prefix}sudo su${Font_color_suffix} 命令获取临时ROOT权限（执行后可能会提示输入当前账号的密码）。" && exit 1
 }
 
+check_systemd(){
+	command -v systemctl >/dev/null 2>&1 || { echo -e "${Error} 当前系统没有 systemd（systemctl），本脚本不支持！"; exit 1; }
+}
+
 check_sys(){
 	local os_id="" os_like=""
 	if [[ -f /etc/os-release ]]; then
@@ -179,9 +183,21 @@ check_status(){
 }
 
 check_new_ver(){
-	new_ver=$(wget -qO- https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases| jq -r '[.[] | select(.prerelease == false) | select(.draft == false) | .tag_name] | .[0]')
-	[[ -z ${new_ver} ]] && echo -e "${Error} Shadowsocks Rust 最新版本获取失败！" && exit 1
+	if ! command -v jq >/dev/null 2>&1; then
+		echo -e "${Error} 缺少 jq，无法解析版本信息，请先安装 jq！"
+		return 1
+	fi
+	new_ver=$(wget -qO- --timeout=10 https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases | jq -r '[.[] | select(.prerelease == false) | select(.draft == false) | .tag_name] | .[0]' 2>/dev/null)
+	if [[ -z "${new_ver}" || "${new_ver}" == "null" ]]; then
+		echo -e "${Tip} GitHub API 获取失败，尝试备用方式获取版本……"
+		new_ver=$(wget -qO- --no-check-certificate --timeout=10 "https://github.com/shadowsocks/shadowsocks-rust/releases/latest" | grep -oE 'releases/tag/v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | awk -F/ '{print $NF}')
+	fi
+	if [[ -z "${new_ver}" ]]; then
+		echo -e "${Error} Shadowsocks Rust 最新版本获取失败！"
+		return 1
+	fi
 	echo -e "${Info} 检测到 Shadowsocks Rust 最新版本为 [ ${new_ver} ]"
+	return 0
 }
 
 check_ver_comparison(){
@@ -315,7 +331,8 @@ ExecStartPre=/bin/sh -c 'ulimit -n 51200'
 ExecStart=/usr/local/bin/ss-rust -c /etc/ss-rust/config.json
 [Install]
 WantedBy=multi-user.target' > /etc/systemd/system/ss-rust.service
-systemctl enable --now ss-rust
+	systemctl daemon-reload
+	systemctl enable ss-rust
 	echo -e "${Info} Shadowsocks Rust 服务配置完成！"
 }
 
@@ -409,17 +426,13 @@ ${Green_font_prefix} 1.${Font_color_suffix} 开启  ${Green_font_prefix} 2.${Fon
 }
 
 Gen_psk(){
-	case "$1" in
-		2022-blake3-aes-128-gcm)
-			openssl rand -base64 16
-			;;
-		2022-blake3-aes-256-gcm|2022-blake3-chacha20-poly1305)
-			openssl rand -base64 32
-			;;
-		*)
-			openssl rand -base64 32
-			;;
-	esac
+	local bytes=32
+	[[ "$1" == "2022-blake3-aes-128-gcm" ]] && bytes=16
+	if command -v openssl >/dev/null 2>&1; then
+		openssl rand -base64 "${bytes}"
+	else
+		head -c "${bytes}" /dev/urandom | base64 | tr -d '\n'
+	fi
 }
 
 check_psk(){
@@ -447,7 +460,7 @@ Set_password(){
 		fi
 	else
 		read -e -p "(默认：随机生成32位长度)：" password
-		[[ -z "${password}" ]] && password=$(openssl rand -base64 32)
+		[[ -z "${password}" ]] && password=$(Gen_psk "${cipher}")
 	fi
 	echo && echo "=================================="
 	echo -e "密码：${Red_background_prefix} ${password} ${Font_color_suffix}"
@@ -576,12 +589,12 @@ Install(){
 	echo -e "${Info} 开始安装/配置 依赖..."
 	Installation_dependency
 	echo -e "${Info} 开始下载/安装..."
-	check_new_ver
+	check_new_ver || exit 1
 	Download
-	echo -e "${Info} 开始安装系统服务脚本..."
-	Service
 	echo -e "${Info} 开始写入 配置文件..."
 	Write_config
+	echo -e "${Info} 开始安装系统服务脚本..."
+	Service
 	echo -e "${Info} 所有步骤 安装完毕，开始启动..."
 	Start
 }
@@ -617,7 +630,7 @@ Restart(){
 
 Update(){
 	check_installed_status
-	check_new_ver
+	check_new_ver || exit 1
 	check_ver_comparison
 	echo -e "${Info} Shadowsocks Rust 更新完毕！"
     sleep 3s
@@ -633,7 +646,10 @@ Uninstall(){
 	if [[ ${unyn} == [Yy] ]]; then
 		check_status
 		[[ "$status" == "running" ]] && systemctl stop ss-rust
-        systemctl disable ss-rust
+		systemctl disable ss-rust 2>/dev/null
+		rm -f /etc/systemd/system/ss-rust.service
+		systemctl daemon-reload
+		systemctl reset-failed ss-rust 2>/dev/null
 		rm -rf "${FOLDER}"
 		rm -rf "${FILE}"
 		echo && echo "Shadowsocks Rust 卸载完成！" && echo
@@ -668,18 +684,26 @@ urlsafe_base64(){
 	echo -e "${date}"
 }
 
+Gen_QR(){
+	if command -v qrencode >/dev/null 2>&1; then
+		qrencode -t ANSIUTF8 "$1"
+	else
+		echo -e " 二维码：未安装 qrencode，无法本地生成（可安装 qrencode 后查看，或使用上方 ss:// 链接）"
+	fi
+}
+
 Link_QR(){
 	if [[ "${ipv4}" != "IPv4_Error" ]]; then
 		SSbase64=$(urlsafe_base64 "${cipher}:${password}@${ipv4}:${port}")
 		SSurl="ss://${SSbase64}"
-		SSQRcode="https://cli.im/api/qrcode/code?text=${SSurl}"
-		link_ipv4=" 链接  [IPv4]：${Red_font_prefix}${SSurl}${Font_color_suffix} \n 二维码[IPv4]：${Red_font_prefix}${SSQRcode}${Font_color_suffix}"
+		link_ipv4=" 链接  [IPv4]：${Red_font_prefix}${SSurl}${Font_color_suffix}
+$(Gen_QR "${SSurl}")"
 	fi
 	if [[ "${ipv6}" != "IPv6_Error" ]]; then
 		SSbase64=$(urlsafe_base64 "${cipher}:${password}@${ipv6}:${port}")
 		SSurl="ss://${SSbase64}"
-		SSQRcode="https://cli.im/api/qrcode/code?text=${SSurl}"
-		link_ipv6=" 链接  [IPv6]：${Red_font_prefix}${SSurl}${Font_color_suffix} \n 二维码[IPv6]：${Red_font_prefix}${SSQRcode}${Font_color_suffix}"
+		link_ipv6=" 链接  [IPv6]：${Red_font_prefix}${SSurl}${Font_color_suffix}
+$(Gen_QR "${SSurl}")"
 	fi
 }
 
@@ -713,41 +737,52 @@ Status(){
 }
 
 Update_Shell(){
+	local sh_url="https://raw.githubusercontent.com/BFDZ/Shadowsocks-Rust/master/ss-rust.sh"
 	echo -e "当前版本为 [ ${sh_ver} ]，开始检测最新版本..."
-	sh_new_ver=$(wget --no-check-certificate -qO- "https://raw.githubusercontent.com/BFDZ/Shadowsocks-Rust/master/ss-rust.sh"|grep 'sh_ver="'|awk -F "=" '{print $NF}'|sed 's/\"//g'|head -1)
-	[[ -z ${sh_new_ver} ]] && echo -e "${Error} 检测最新版本失败 !" && Start_Menu
-	if [[ ${sh_new_ver} != ${sh_ver} ]]; then
+	sh_new_ver=$(wget --no-check-certificate -qO- "${sh_url}"|grep 'sh_ver="'|awk -F "=" '{print $NF}'|sed 's/\"//g'|head -1)
+	if [[ -z "${sh_new_ver}" ]]; then
+		echo -e "${Error} 检测最新版本失败 !"
+		sleep 3s
+		Start_Menu
+		return 0
+	fi
+	if [[ "${sh_new_ver}" != "${sh_ver}" ]]; then
 		echo -e "发现新版本[ ${sh_new_ver} ]，是否更新？[Y/n]"
 		read -p "(默认：y)：" yn
 		[[ -z "${yn}" ]] && yn="y"
 		if [[ ${yn} == [Yy] ]]; then
-			wget -O ss-rust.sh --no-check-certificate https://raw.githubusercontent.com/BFDZ/Shadowsocks-Rust/master/ss-rust.sh && chmod +x ss-rust.sh
-			echo -e "脚本已更新为最新版本[ ${sh_new_ver} ]！"
-			echo -e "3s后执行新脚本"
-            sleep 3s
-            bash ss-rust.sh
+			if wget -O "${filepath}/ss-rust.sh" --no-check-certificate "${sh_url}"; then
+				chmod +x "${filepath}/ss-rust.sh"
+				echo -e "脚本已更新为最新版本[ ${sh_new_ver} ]！"
+				echo -e "3s后执行新脚本"
+				sleep 3s
+				bash "${filepath}/ss-rust.sh"
+			else
+				echo -e "${Error} 脚本更新失败，请检查网络 !"
+				sleep 3s
+				Start_Menu
+			fi
 		else
 			echo && echo "	已取消..." && echo
-            sleep 3s
-            Start_Menu
+			sleep 3s
+			Start_Menu
 		fi
 	else
 		echo -e "当前已是最新版本[ ${sh_new_ver} ] ！"
 		sleep 3s
-        Start_Menu
+		Start_Menu
 	fi
-	sleep 3s
-    	bash ss-rust.sh
 }
 
 Before_Start_Menu() {
-    echo && echo -n -e "${yellow}* 按回车返回主菜单 *${plain}" && read temp
+    echo && echo -n -e "${Yellow_font_prefix}* 按回车返回主菜单 *${Font_color_suffix}" && read temp
     Start_Menu
 }
 
 Start_Menu(){
 clear
 check_root
+check_systemd
 check_sys
 sysArch
 action=$1
