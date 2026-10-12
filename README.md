@@ -3,7 +3,7 @@
 ## 使用
 
 ```bash
-wget -O ss-rust.sh --no-check-certificate https://raw.githubusercontent.com/BFDZ/Shadowsocks-Rust/master/ss-rust.sh && chmod +x ss-rust.sh && ./ss-rust.sh
+wget -O ss-rust.sh --no-check-certificate https://raw.githubusercontent.com/BFDZ/Shadowsocks-Rust/master/ss_rust.sh && chmod +x ss_rust.sh && ./ss_rust.sh
 ```
 
 ![](https://slyw.me/usr/uploads/2023/05/598264206.png)
