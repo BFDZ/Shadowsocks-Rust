@@ -27,8 +27,15 @@ check_root(){
 	[[ $EUID != 0 ]] && echo -e "${Error} 当前非ROOT账号(或没有ROOT权限)，无法继续操作，请更换ROOT账号或使用 ${Green_background_prefix}sudo su${Font_color_suffix} 命令获取临时ROOT权限（执行后可能会提示输入当前账号的密码）。" && exit 1
 }
 
-check_systemd(){
-	command -v systemctl >/dev/null 2>&1 || { echo -e "${Error} 当前系统没有 systemd（systemctl），本脚本不支持！"; exit 1; }
+check_init(){
+	if command -v systemctl >/dev/null 2>&1; then
+		init_sys="systemd"
+	elif command -v rc-service >/dev/null 2>&1 && [[ -d /etc/init.d ]]; then
+		init_sys="openrc"
+	else
+		echo -e "${Error} 未检测到 systemd 或 OpenRC，本脚本暂不支持当前系统的服务管理！"
+		exit 1
+	fi
 }
 
 check_sys(){
@@ -177,8 +184,22 @@ check_installed_status(){
 }
 
 check_status(){
-	status="$(systemctl is-active ss-rust 2>/dev/null)"
-	[[ "${status}" == "active" ]] && status="running"
+	case "${init_sys}" in
+		systemd)
+			status="$(systemctl is-active ss-rust 2>/dev/null)"
+			[[ "${status}" == "active" ]] && status="running"
+			;;
+		openrc)
+			if rc-service ss-rust status >/dev/null 2>&1; then
+				status="running"
+			else
+				status="stopped"
+			fi
+			;;
+		*)
+			status="unknown"
+			;;
+	esac
 	return 0
 }
 
@@ -315,7 +336,28 @@ Download() {
 }
 
 Service(){
-	echo '
+	if [[ "${init_sys}" == "openrc" ]]; then
+		cat > /etc/init.d/ss-rust <<'EOF'
+#!/sbin/openrc-run
+
+name="Shadowsocks Rust"
+description="Shadowsocks Rust Service"
+command="/usr/local/bin/ss-rust"
+command_args="-c /etc/ss-rust/config.json"
+command_background="true"
+pidfile="/run/ss-rust.pid"
+output_log="/var/log/ss-rust.log"
+error_log="/var/log/ss-rust.log"
+
+depend() {
+	need net
+	after firewall
+}
+EOF
+		chmod +x /etc/init.d/ss-rust
+		rc-update add ss-rust default
+	else
+		echo '
 [Unit]
 Description= Shadowsocks Rust Service
 After=network-online.target
@@ -331,8 +373,9 @@ ExecStartPre=/bin/sh -c 'ulimit -n 51200'
 ExecStart=/usr/local/bin/ss-rust -c /etc/ss-rust/config.json
 [Install]
 WantedBy=multi-user.target' > /etc/systemd/system/ss-rust.service
-	systemctl daemon-reload
-	systemctl enable ss-rust
+		systemctl daemon-reload
+		systemctl enable ss-rust
+	fi
 	echo -e "${Info} Shadowsocks Rust 服务配置完成！"
 }
 
